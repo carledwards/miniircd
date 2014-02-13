@@ -32,7 +32,9 @@ import tempfile
 import time
 from datetime import datetime
 from optparse import OptionParser
-
+import serial
+import StringIO
+import threading
 
 def create_directory(path):
     if not os.path.isdir(path):
@@ -46,6 +48,7 @@ class Channel(object):
         self.members = set()
         self._topic = ""
         self._key = None
+        self.serial_client = None
         if self.server.statedir:
             self._state_path = "%s/%s" % (
                 self.server.statedir,
@@ -218,7 +221,13 @@ class Client(object):
 
     def __command_handler(self, command, arguments):
         def away_handler():
-            pass
+            for (channelname, channel) in self.channels.items():
+                if channel.serial_client:
+                    if len(arguments) == 1 and arguments[0] == "Away":
+                        # close the serial port
+                        channel.serial_client.close_serial(is_away=True)
+                    else:
+                        channel.serial_client.open_serial()
 
         def ison_handler():
             if len(arguments) < 1:
@@ -630,13 +639,112 @@ class Client(object):
             self.reply("422 %s :MOTD File is missing" % self.nickname)
 
 
+class SerialClient(object):
+
+    def __init__(self, server, channelName):
+        self.thread = None
+        self.server = server
+        self.channels = {}  # irc_lower(Channel name) --> Channel
+        self.nickname = channelName
+        self.user = self.nickname
+        self.realname = self.nickname
+        self.host = "internal"
+        self.ser = serial.Serial()
+        self.ser.port = channelName[1:]
+        self.ser.timeout = .5
+        self.open_serial()
+        self.is_away = False
+
+    def is_serial_open(self):
+        return self.ser.isOpen()
+
+    def open_serial(self, baudrate=115200):
+        if not self.is_serial_open():
+            try:
+                self.ser.baudrate = baudrate
+                self.ser.open()
+            except OSError as ose:
+                self.server.print_error("Opening serial port error%s: %s" % (self.ser.port, ose))
+
+            if self.is_serial_open():
+                self.thread = threading.Thread(target=self.read_from_serial)
+                self.thread.daemon = True
+                self.thread.start()
+        return self.is_serial_open()
+                    
+    def close_serial(self, is_away=False):
+        self.is_away = is_away
+        if self.is_serial_open():
+            self.ser.close()
+            if self.thread:
+                self.thread.join()
+
+    def get_prefix(self):
+        return "%s!%s@%s" % (self.nickname, self.user, self.host)
+    prefix = property(get_prefix)
+
+    def check_aliveness(self):
+        pass
+
+    def message_channel(self, channel, command, message, include_self=False):
+        line = ":%s %s %s" % (self.prefix, command, message)
+        for client in channel.members:
+            if client != self or include_self:
+                client.message(line)
+        
+    def message(self, msg):
+        if not self.is_serial_open():
+            if self.is_away:
+                self.write_message("*** serial port is closed because you are 'Away' ***")
+                return
+            else:
+                # try and open it
+                if not self.open_serial():
+                    self.write_message("*** serial port could not be opened ***")
+        
+        if msg.find(" PRIVMSG ") >= 0:
+            msgparts = msg.rpartition(":")
+            contents = msgparts[len(msgparts)-1]
+            try:
+                self.ser.write("%s\n" % contents)
+            except serial.serialutil.SerialException as se:
+                self.server.print_error("error writing to serial port %s: %s" % (self.ser.port, ose))
+                self.close_serial()
+
+    def write_message(self, message):
+        command = "PRIVMSG"
+        targetname = self.nickname
+        server = self.server
+        client = server.get_client(targetname)
+        if client:
+            client.message(":%s %s %s :%s"
+                           % (self.prefix, command, targetname, message))
+        elif server.has_channel(targetname):
+            channel = server.get_channel(targetname)
+            self.message_channel(
+                channel, command, "%s :%s" % (channel.name, message))
+        else:
+            self.reply("401 %s %s :No such nick/channel"
+                       % (self.nickname, targetname))
+            
+    def read_from_serial(self):
+        try:
+            while self.ser and self.ser.isOpen():
+                buf = self.ser.read(1000)
+                if len(buf) > 0:
+                    lines = StringIO.StringIO(buf).readlines()
+                    for message in lines:
+                        self.write_message(message)
+        except serial.serialutil.SerialException:
+            pass
+
 class Server(object):
     def __init__(self, options):
         self.ports = options.ports
         self.password = options.password
         self.ssl_pem_file = options.ssl_pem_file
         self.motdfile = options.motd
-        self.verbose = options.verbose
+        self.verbose = True
         self.debug = options.debug
         self.logdir = options.logdir
         self.statedir = options.statedir
@@ -683,6 +791,9 @@ class Server(object):
         else:
             channel = Channel(self, channelname)
             self.channels[irc_lower(channelname)] = channel
+            if not channel.serial_client:
+                channel.serial_client = SerialClient(self, channelname)
+            channel.add_member(channel.serial_client)
         return channel
 
     def get_motd_lines(self):
@@ -751,7 +862,7 @@ class Server(object):
                 [x.socket for x in self.clients.values()
                           if x.write_queue_size() > 0],
                 [],
-                10)
+                .5)
             for x in iwtd:
                 if x in self.clients:
                     self.clients[x].socket_readable_notification()
@@ -834,8 +945,8 @@ def main(argv):
         action="store_true",
         help="be verbose (print some progress messages to stdout)")
     (options, args) = op.parse_args(argv[1:])
-    if options.debug:
-        options.verbose = True
+#    if options.debug:
+#        options.verbose = True
     if options.ssl_pem_file is not None:
         # Only import ssl when needed
         global ssl
