@@ -4,14 +4,15 @@ miniircd -- A (very) simple Internet Relay Chat (IRC) server
 Carl's Changes
 --------------
 
-Added support to allowing my IRC chat client to communicate to multiple Pinnocio boards 
-(http://pinocc.io) at the same time.
+Added support by allowing an IRC client to communicate to one or more serial boards
+(e.g. Pinnocio http://pinocc.io) at the same time.
 
-To use, open up using the serial port as the channel name (e.g. #/dev/tty.usbmodem14111).
-This will open up a local serial on the machine running a miniircd instance using 
-the serial parameters 115200,N,8,1.  All chats made by you be sent to the serial port and 
-responses will be written back from a serial-port user.
+To use this, open up the serial port by specifying it as the channel name 
+(e.g. #/dev/tty.usbmodem14111).  This will open up a local serial on the machine 
+running the miniircd.  All chats are directed to the serial port and 
+responses are automatically written back by a serial-port user.
 
+The baked-in serial port parameters are 115200,8,N,1.
 
 Description
 -----------
