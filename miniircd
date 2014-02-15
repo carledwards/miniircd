@@ -708,7 +708,7 @@ class SerialClient(object):
             try:
                 self.ser.write("%s\n" % contents)
             except serial.serialutil.SerialException as se:
-                self.server.print_error("error writing to serial port %s: %s" % (self.ser.port, ose))
+                self.server.print_error("error writing to serial port %s: %s" % (self.ser.port, se))
                 self.close_serial()
 
     def write_message(self, message):
